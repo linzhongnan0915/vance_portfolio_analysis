@@ -1,5 +1,7 @@
 # Vance Portfolio Risk Analysis
 
+[![Tests](https://github.com/linzhongnan0915/vance_portfolio_analysis/actions/workflows/tests.yml/badge.svg)](https://github.com/linzhongnan0915/vance_portfolio_analysis/actions/workflows/tests.yml)
+
 ## Repository description
 
 This is an **educational portfolio risk analysis** project on a Vance-style ETF
@@ -33,6 +35,20 @@ stress tests, robustness, mandate selection) and a read-only Streamlit dashboard
 | External docs | English memos under `docs/` and `reports/` |
 
 Local check: `python scripts/run_tests.py`
+
+---
+
+## Dashboard preview
+
+A screenshot is not bundled in this repository yet. After you run the pipeline and
+dashboard locally, save a capture as `docs/images/dashboard_overview.png`, then add
+this line to this section (or uncomment it if you keep a template in git):
+
+```markdown
+![Dashboard preview](docs/images/dashboard_overview.png)
+```
+
+**How to capture:** See [docs/GUIDE.md](docs/GUIDE.md#dashboard-screenshots-for-readme).
 
 ---
 
