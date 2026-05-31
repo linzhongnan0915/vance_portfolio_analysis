@@ -38,20 +38,6 @@ Local check: `python scripts/run_tests.py`
 
 ---
 
-## Dashboard preview
-
-A screenshot is not bundled in this repository yet. After you run the pipeline and
-dashboard locally, save a capture as `docs/images/dashboard_overview.png`, then add
-this line to this section (or uncomment it if you keep a template in git):
-
-```markdown
-![Dashboard preview](docs/images/dashboard_overview.png)
-```
-
-**How to capture:** See [docs/GUIDE.md](docs/GUIDE.md#dashboard-screenshots-for-readme).
-
----
-
 ## Project overview
 
 | Item | Description |
