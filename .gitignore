@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / editor (local only)
+.idea/
+.vscode/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project outputs (regenerate via pipeline)
+output/
+figures/
+
+# Data cache (keep raw empty; processed is local cache)
+data/processed/*.csv
+data/*.csv
+
+# Streamlit
+.streamlit/secrets.toml
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
