@@ -103,6 +103,68 @@ python scripts/_relocate_stages.py
 
 ---
 
+## Dashboard screenshots for README
+
+README images live under `docs/images/`. The main file name is
+`dashboard_overview.png` (linked from the root README **Dashboard preview** section).
+
+### Prerequisites
+
+1. Install dependencies: `pip install -r requirements.txt`
+2. Generate dashboard inputs (full pipeline or dashboard build only):
+
+```text
+python scripts/run_all_stages.py
+```
+
+or
+
+```text
+python scripts/build_dashboard_outputs.py
+```
+
+3. Start the app:
+
+```text
+streamlit run dashboard/app.py
+```
+
+Open the URL shown in the terminal (default `http://localhost:8501`).
+
+### Capture steps
+
+1. In the browser, open a representative view (e.g. overview or key metrics page).
+2. Use a full-window screenshot tool:
+   - Windows: Snipping Tool or Win+Shift+S, then save.
+   - macOS: Cmd+Shift+4 (region) or Cmd+Shift+3 (full screen).
+3. Save as PNG: `docs/images/dashboard_overview.png`
+4. Prefer width around 1200-1600 px; keep file size reasonable for GitHub (under 1 MB if possible).
+5. In `README.md`, under **Dashboard preview**, add or uncomment:
+
+```markdown
+![Dashboard preview](docs/images/dashboard_overview.png)
+```
+
+6. Commit the image with the doc update:
+
+```text
+git add docs/images/dashboard_overview.png README.md
+git commit -m "docs: add dashboard overview screenshot"
+```
+
+### Updating an existing screenshot
+
+Re-run the dashboard after pipeline or data changes, capture again, overwrite
+`docs/images/dashboard_overview.png`, and commit. Do not commit files under `output/`;
+the dashboard still reads generated CSVs locally only.
+
+### Optional extra images
+
+You may add more PNGs in `docs/images/` (e.g. `walk_forward_summary.png`) and link
+them from `reports/PROJECT_SUMMARY.md` or the README. Keep names lowercase with underscores.
+
+---
+
 ## Troubleshooting
 
 **`UnicodeDecodeError` (gbk) on Windows**

@@ -38,6 +38,12 @@ Local check: `python scripts/run_tests.py`
 
 ---
 
+## Dashboard preview
+
+![Dashboard preview](docs/images/dashboard_overview.png)
+
+---
+
 ## Project overview
 
 | Item | Description |
