@@ -47,6 +47,7 @@ page = st.sidebar.radio(
     "Section",
     [
         "Overview",
+        "Live / Daily Monitor",
         "Baseline IS/OOS",
         "Assumptions & Constraints",
         "Portfolio Construction",
@@ -138,6 +139,112 @@ risk policy — and which defensive extension fits a wealth-management mandate?
             f"**Policy candidate / next research step:** {decision.iloc[0]['Content']} "
             "Interpret as a mandate-consistent adjustment, not a full-period dominant strategy."
         )
+
+# =============================================================================
+elif page == "Live / Daily Monitor":
+    st.header("Live / Daily Monitor")
+    st.warning(
+        "**Monitoring output only.** Not investment advice. Not real-time. No broker execution."
+    )
+    st.caption(
+        "Reads precomputed artifacts from `output/live/`. "
+        f"Refresh with: `{dd.LIVE_UPDATE_HINT}`"
+    )
+
+    if not dd.live_artifacts_available():
+        st.info(dd.LIVE_UPDATE_HINT)
+        st.stop()
+
+    signal = dd.load_live_signal() or {}
+    prices = dd.load_live_prices()
+    metrics = dd.load_live_risk_metrics()
+    weights = dd.load_live_target_weights()
+
+    dq = signal.get("data_quality") or {}
+    warnings = list(dq.get("warnings") or [])
+
+    st.subheader("Signal status")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Data as-of", signal.get("data_as_of", "—"))
+    c2.metric("Price date used", signal.get("price_date_used", "—"))
+    c3.metric("Signal effective date", signal.get("signal_effective_date") or "—")
+    c4.metric("Next rebalance date", signal.get("next_rebalance_date") or "—")
+
+    if signal.get("signal_effective_date") is None:
+        st.warning(
+            "The local price cache does not include the next trading day after the price date used. "
+            "Refresh prices and re-run the daily update job."
+        )
+    if signal.get("next_rebalance_date") is None:
+        st.warning(
+            "The local price cache does not include the next scheduled monthly rebalance date. "
+            "Refresh prices and re-run the daily update job."
+        )
+
+    rebalance_due = bool(signal.get("rebalance_due"))
+    if rebalance_due:
+        st.error("Rebalance due: review target weights before the next execution window.")
+    else:
+        st.success("Rebalance not due under the monthly policy calendar.")
+
+    st.markdown(
+        f"- **Strategy:** `{signal.get('strategy_id', '—')}`  \n"
+        f"- **Daily signal mode:** "
+        f"{'enabled' if signal.get('daily_signal_mode') else 'disabled (monthly policy only)'}  \n"
+        f"- **Signal generated (UTC):** {signal.get('signal_generated_at_utc', '—')}"
+    )
+
+    if warnings:
+        st.subheader("Data quality warnings")
+        for w in warnings:
+            st.warning(w.replace("_", " "))
+    missing = dq.get("missing_tickers") or []
+    if missing:
+        st.warning(f"Missing tickers in price panel: {', '.join(missing)}")
+    if dq.get("defaulted_to_cache_end"):
+        st.info("As-of date defaulted to the last trading day in the local cache (no explicit --as-of).")
+
+    st.subheader("Target weights (next rebalance)")
+    if not weights.empty:
+        st.dataframe(weights, width="stretch", hide_index=True)
+        charts.bar_target_weights(weights, "Policy target weights")
+    else:
+        st.caption("Target weights file is empty.")
+
+    st.subheader("Latest risk metrics")
+    if not metrics.empty:
+        display_metrics = metrics.copy()
+        pct_cols = [
+            "cumulative_return",
+            "annualized_return",
+            "annualized_volatility",
+            "max_drawdown",
+            "var_95_daily",
+            "cvar_95_daily",
+            "tracking_error",
+        ]
+        for col in pct_cols:
+            if col in display_metrics.columns:
+                display_metrics[col] = display_metrics[col].apply(
+                    lambda x: fmt.pct(x) if isinstance(x, (int, float)) else x
+                )
+        for col in ["sharpe_ratio", "sortino_ratio", "calmar_ratio", "beta_vs_spy", "information_ratio"]:
+            if col in display_metrics.columns:
+                display_metrics[col] = display_metrics[col].apply(
+                    lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else x
+                )
+        st.dataframe(display_metrics, width="stretch", hide_index=True)
+    else:
+        st.caption("Risk metrics file is empty.")
+
+    st.subheader("Latest prices")
+    if not prices.empty:
+        st.dataframe(prices, width="stretch", hide_index=True)
+    else:
+        st.caption("Prices file is empty.")
+
+    if signal.get("disclaimer"):
+        st.caption(signal["disclaimer"])
 
 # =============================================================================
 elif page == "Baseline IS/OOS":

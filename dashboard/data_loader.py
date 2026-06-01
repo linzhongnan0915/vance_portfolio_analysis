@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
-from src.config import DASHBOARD_OUTPUT_DIR, OUTPUT_DIR, ROOT
+from src.config import DASHBOARD_OUTPUT_DIR, OUTPUT_DIR, OUTPUT_LIVE_DIR, ROOT
 from src.metrics import compute_drawdown, compute_metrics, metrics_to_series
 
 OUTPUT = OUTPUT_DIR
 DASHBOARD = DASHBOARD_OUTPUT_DIR
 
 PIPELINE_HINT = "Run: python scripts/run_all_stages.py"
+LIVE_UPDATE_HINT = "Run: python scripts/update_daily.py"
+
+LIVE_ARTIFACT_FILES = (
+    "latest_signal.json",
+    "latest_prices.csv",
+    "latest_risk_metrics.csv",
+    "latest_target_weights.csv",
+)
 
 
 def _read_csv(path: Path, **kwargs) -> pd.DataFrame:
@@ -145,6 +155,34 @@ def load_turnover_by_phase() -> pd.DataFrame:
 
 def load_key_return_series() -> pd.DataFrame:
     return _read_required(DASHBOARD / "key_return_series.csv", "key_return_series.csv")
+
+
+# --- Live daily monitor (output/live/) — read-only artifacts ---
+
+
+def live_artifacts_available() -> bool:
+    """True when all four v3 live monitor files exist under output/live/."""
+    return all((OUTPUT_LIVE_DIR / name).exists() for name in LIVE_ARTIFACT_FILES)
+
+
+def load_live_signal() -> dict[str, Any] | None:
+    path = OUTPUT_LIVE_DIR / "latest_signal.json"
+    if not path.exists():
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def load_live_prices() -> pd.DataFrame:
+    return _read_csv(OUTPUT_LIVE_DIR / "latest_prices.csv")
+
+
+def load_live_risk_metrics() -> pd.DataFrame:
+    return _read_csv(OUTPUT_LIVE_DIR / "latest_risk_metrics.csv")
+
+
+def load_live_target_weights() -> pd.DataFrame:
+    return _read_csv(OUTPUT_LIVE_DIR / "latest_target_weights.csv")
 
 
 def load_baseline_stage1_returns() -> pd.DataFrame:
