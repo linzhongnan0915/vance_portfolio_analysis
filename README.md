@@ -14,9 +14,11 @@ model validation, and wealth-management risk analytics storytelling).
   for teaching and defend-in-interview purposes.
 - **License:** [MIT](LICENSE) (code and docs in this repository).
 
-**Recommendation:** **Fixed + SHY Version A** (25/25/25/15/5/5). Do not use uncapped
-inverse-volatility + SHY; that variant concentrates in cash-like SHY and is inconsistent
-with a diversified equity-risk mandate.
+**Current policy candidate:** **Fixed + SHY Version A** (25/25/25/15/5/5) — a
+mandate-consistent defensive adjustment for review (interpretability over highest Sharpe).
+Modest 2022 stress improvement; not full-period dominant. Reject uncapped inverse-volatility
++ SHY (cash-like, mandate-inconsistent). Test constrained dynamic SHY rules before calling
+any strategy optimal.
 
 The repository implements a staged analytics pipeline (baseline, walk-forward backtest,
 stress tests, robustness, mandate selection) and a read-only Streamlit dashboard.
@@ -73,7 +75,8 @@ separates **risk metrics** from **policy fit**.
 | Min-variance | ~12.1% | ~10.9% | ~1.12 | ~-24% |
 | SPY | ~14.4% | ~17.1% | ~0.84 | ~-34% |
 
-Final policy choice: **Fixed + SHY Version A** after mandate and audit stages. Details:
+**Current policy candidate:** **Fixed + SHY Version A** after mandate and audit stages
+(policy candidate for review, not a final optimal strategy). Details:
 [reports/methodology.md](reports/methodology.md).
 
 ---
