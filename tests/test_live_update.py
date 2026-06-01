@@ -1,0 +1,145 @@
+"""Live daily update (v3 MVP) - synthetic data only."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+import pytest
+
+from src.config import BENCHMARK, LIVE_POLICY_TICKERS, LIVE_STRATEGY_ID
+from src.live_update import (
+    is_rebalance_due,
+    next_scheduled_rebalance_date,
+    run_daily_update,
+)
+from tests.fixtures import make_synthetic_prices
+
+REQUIRED_SIGNAL_KEYS = {
+    "schema_version",
+    "data_as_of",
+    "price_date_used",
+    "signal_generated_at_utc",
+    "signal_effective_date",
+    "next_rebalance_date",
+    "rebalance_due",
+    "strategy_id",
+    "daily_signal_mode",
+    "disclaimer",
+    "weights",
+    "risk_metrics",
+    "data_quality",
+}
+
+
+def _live_prices(end: str = "2022-12-31") -> pd.DataFrame:
+    tickers = list(LIVE_POLICY_TICKERS) + ([BENCHMARK] if BENCHMARK not in LIVE_POLICY_TICKERS else [])
+    tickers = list(dict.fromkeys(tickers))
+    if "SHY" not in tickers:
+        tickers.append("SHY")
+    return make_synthetic_prices(start="2020-01-01", end=end, tickers=tickers)
+
+
+def test_run_daily_update_writes_four_files(tmp_path: Path) -> None:
+    prices = _live_prices()
+    out = tmp_path / "live"
+    result = run_daily_update("2022-06-15", prices=prices, output_dir=out, dry_run=False)
+
+    for name in (
+        "latest_prices.csv",
+        "latest_risk_metrics.csv",
+        "latest_target_weights.csv",
+        "latest_signal.json",
+    ):
+        assert (out / name).exists(), name
+
+    assert result.signal["strategy_id"] == LIVE_STRATEGY_ID
+    assert result.signal["daily_signal_mode"] is False
+
+
+def test_signal_json_schema_keys(tmp_path: Path) -> None:
+    run_daily_update("2022-06-15", prices=_live_prices(), output_dir=tmp_path / "live")
+    payload = json.loads((tmp_path / "live" / "latest_signal.json").read_text(encoding="utf-8"))
+    assert REQUIRED_SIGNAL_KEYS <= set(payload.keys())
+
+
+def test_policy_weights_sum_to_one(tmp_path: Path) -> None:
+    run_daily_update("2022-06-15", prices=_live_prices(), output_dir=tmp_path / "live")
+    payload = json.loads((tmp_path / "live" / "latest_signal.json").read_text(encoding="utf-8"))
+    w = payload["weights"]
+    assert abs(sum(w.values()) - 1.0) < 1e-9
+    assert w["QQQ"] == pytest.approx(0.25)
+    assert w["SHY"] == pytest.approx(0.05)
+
+
+def test_no_future_prices_in_panel(tmp_path: Path) -> None:
+    prices = _live_prices(end="2022-12-31")
+    as_of = "2022-06-15"
+    run_daily_update(as_of, prices=prices, output_dir=tmp_path / "live")
+    written = pd.read_csv(tmp_path / "live" / "latest_prices.csv")
+    assert (written["data_as_of"] == as_of).all()
+    assert pd.Timestamp(written["price_date_used"].iloc[0]) <= pd.Timestamp(as_of)
+
+
+def test_rebalance_due_first_trading_day_of_month(tmp_path: Path) -> None:
+    prices = _live_prices(end="2022-12-31")
+    idx = prices.index
+
+    # 2022-06-01 is Wednesday - first business day of June 2022
+    due_result = run_daily_update("2022-06-01", prices=prices, output_dir=tmp_path / "due")
+    assert is_rebalance_due(idx, pd.Timestamp("2022-06-01"))
+    assert due_result.rebalance_due is True
+    assert due_result.signal["rebalance_due"] is True
+
+    not_due = run_daily_update("2022-06-15", prices=prices, output_dir=tmp_path / "not_due")
+    assert not_due.rebalance_due is False
+    assert not_due.signal["rebalance_due"] is False
+
+
+def test_next_rebalance_is_next_month_first_trading_day(tmp_path: Path) -> None:
+    prices = _live_prices(end="2022-12-31")
+    idx = prices.index
+    mid = pd.Timestamp("2022-06-15")
+    expected = next_scheduled_rebalance_date(idx, mid)
+    result = run_daily_update("2022-06-15", prices=prices, output_dir=tmp_path / "live")
+    assert result.next_rebalance_date == expected.date()
+
+
+def test_dry_run_does_not_write_files(tmp_path: Path) -> None:
+    out = tmp_path / "dry"
+    run_daily_update("2022-06-15", prices=_live_prices(), output_dir=out, dry_run=True)
+    assert not (out / "latest_signal.json").exists()
+
+
+def test_target_weights_for_next_monthly_rebalance(tmp_path: Path) -> None:
+    result = run_daily_update("2022-06-15", prices=_live_prices(), output_dir=tmp_path / "live")
+    wdf = result.weights_df
+    assert (wdf["next_rebalance_date"] == result.next_rebalance_date.isoformat()).all()
+    assert result.next_rebalance_date.month == 7
+
+
+def test_default_as_of_uses_cache_end_no_crash(tmp_path: Path) -> None:
+    """Panel ends 2022-06-15: default as-of must not require calendar days after cache end."""
+    prices = _live_prices(end="2022-06-15")
+    result = run_daily_update(as_of=None, prices=prices, output_dir=tmp_path / "live", dry_run=True)
+    assert result.data_as_of == pd.Timestamp("2022-06-15").date()
+    assert result.signal["signal_effective_date"] is None
+    assert "no_next_trading_day_in_cache" in result.signal["data_quality"]["warnings"]
+    assert result.signal["data_quality"]["defaulted_to_cache_end"] is True
+
+
+def test_signal_effective_date_after_data_as_of_when_available(tmp_path: Path) -> None:
+    result = run_daily_update("2022-06-15", prices=_live_prices(end="2022-12-31"), output_dir=tmp_path / "live")
+    assert result.signal_effective_date == pd.Timestamp("2022-06-16").date()
+    assert result.signal["signal_effective_date"] == "2022-06-16"
+    assert "no_next_trading_day_in_cache" not in result.signal["data_quality"]["warnings"]
+
+
+def test_missing_shy_recorded_in_data_quality(tmp_path: Path) -> None:
+    tickers = [t for t in LIVE_POLICY_TICKERS if t != "SHY"]
+    if BENCHMARK not in tickers:
+        tickers.append(BENCHMARK)
+    prices = make_synthetic_prices(start="2020-01-01", end="2022-12-31", tickers=tickers)
+    result = run_daily_update("2022-06-15", prices=prices, output_dir=tmp_path / "live", dry_run=True)
+    assert "SHY" in result.signal["data_quality"]["missing_tickers"]

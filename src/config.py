@@ -11,8 +11,23 @@ DATA_DIR = ROOT / "data"
 DATA_RAW_DIR = DATA_DIR / "raw"
 DATA_PROCESSED_DIR = DATA_DIR / "processed"
 OUTPUT_DIR = ROOT / "output"
+OUTPUT_LIVE_DIR = OUTPUT_DIR / "live"
 DASHBOARD_OUTPUT_DIR = OUTPUT_DIR / "dashboard"
 REPORTS_DIR = ROOT / "reports"
+
+# Live daily monitor (v3 MVP)
+LIVE_STRATEGY_ID = "fixed_shy_version_a"
+LIVE_POLICY_TICKERS = ["QQQ", "SPY", "DIA", "GLD", "TLT", "SHY"]
+LIVE_POLICY_WEIGHTS = pd.Series(
+    {"QQQ": 0.25, "SPY": 0.25, "DIA": 0.25, "GLD": 0.15, "TLT": 0.05, "SHY": 0.05},
+    name="target_weight",
+)
+LIVE_DAILY_SIGNAL_MODE = False
+LIVE_TIMEZONE = "America/New_York"
+LIVE_DISCLAIMER = (
+    "Educational monitoring output. Not investment advice. Not real-time. "
+    "No order execution."
+)
 
 TICKERS = ["QQQ", "SPY", "DIA", "GLD", "TLT"]
 BENCHMARK = "SPY"
