@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
-from src.config import BENCHMARK, LIVE_POLICY_TICKERS, LIVE_STRATEGY_ID
+from src.config import BENCHMARK, DEFAULT_PRICE_START, LIVE_POLICY_TICKERS, LIVE_STRATEGY_ID
 from src import live_update as lu
 from src.live_update import (
     is_rebalance_due,
+    merge_price_panels,
     next_scheduled_rebalance_date,
     run_daily_update,
 )
@@ -232,3 +234,106 @@ def test_no_refresh_path_unchanged(tmp_path: Path) -> None:
     result = run_daily_update("2022-06-15", prices=_live_prices(), output_dir=tmp_path / "live", dry_run=True)
     assert result.signal["data_quality"]["refreshed_prices"] is False
     assert result.signal["data_quality"]["vendor"] == "injected_panel"
+
+
+def test_merge_retains_new_dates() -> None:
+    existing = pd.DataFrame({"SPY": [100.0]}, index=pd.DatetimeIndex(["2026-05-29"]))
+    new = pd.DataFrame({"SPY": [101.0]}, index=pd.DatetimeIndex(["2026-06-01"]))
+    merged = merge_price_panels(existing, new)
+    assert pd.Timestamp("2026-05-29") in merged.index
+    assert pd.Timestamp("2026-06-01") in merged.index
+
+
+def test_merge_new_non_null_overwrites_duplicate_date() -> None:
+    existing = pd.DataFrame({"SPY": [50.0]}, index=pd.DatetimeIndex(["2026-05-29"]))
+    new = pd.DataFrame({"SPY": [99.0]}, index=pd.DatetimeIndex(["2026-05-29"]))
+    merged = merge_price_panels(existing, new)
+    assert merged.loc["2026-05-29", "SPY"] == pytest.approx(99.0)
+
+
+def test_merge_new_nan_preserves_existing_on_duplicate_date() -> None:
+    existing = pd.DataFrame({"SPY": [50.0]}, index=pd.DatetimeIndex(["2026-05-29"]))
+    new = pd.DataFrame({"SPY": [np.nan]}, index=pd.DatetimeIndex(["2026-05-29"]))
+    merged = merge_price_panels(existing, new)
+    assert merged.loc["2026-05-29", "SPY"] == pytest.approx(50.0)
+
+
+def test_merge_single_ticker_backfill_keeps_other_columns() -> None:
+    existing = pd.DataFrame(
+        {"QQQ": [300.0], "SPY": [400.0]},
+        index=pd.DatetimeIndex(["2026-05-29"]),
+    )
+    new = pd.DataFrame({"SHY": [80.0]}, index=pd.DatetimeIndex(["2026-05-29"]))
+    merged = merge_price_panels(existing, new)
+    assert set(merged.columns) == {"QQQ", "SPY", "SHY"}
+    assert merged.loc["2026-05-29", "SPY"] == pytest.approx(400.0)
+    assert merged.loc["2026-05-29", "SHY"] == pytest.approx(80.0)
+
+
+def test_refresh_backfills_shy_from_default_start(tmp_path: Path, monkeypatch) -> None:
+    """Incremental fetch leaves SHY sparse; backfill must request DEFAULT_PRICE_START for SHY."""
+    data_dir = tmp_path / "data"
+    base = _live_prices(end="2023-06-30").drop(columns=["SHY"])
+    path = data_dir / "processed" / "vance_etf_prices.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    base.to_csv(path)
+
+    fetch_calls: list[tuple[frozenset[str], str]] = []
+
+    def mock_fetch(tickers, start, **kw):
+        tset = frozenset(tickers)
+        fetch_calls.append((tset, start))
+        tlist = list(tickers)
+        if start == DEFAULT_PRICE_START:
+            return make_synthetic_prices(start=DEFAULT_PRICE_START, end="2023-06-30", tickers=tlist)
+        return make_synthetic_prices(start="2023-06-15", end="2023-06-30", tickers=tlist)
+
+    monkeypatch.setattr(lu, "fetch_adjusted_closes", mock_fetch)
+    result = run_daily_update(
+        as_of="2023-06-30",
+        data_dir=data_dir,
+        output_dir=tmp_path / "live",
+        refresh_prices=True,
+    )
+    assert any(start == DEFAULT_PRICE_START and "SHY" in ts for ts, start in fetch_calls)
+    lookback = int(result.metrics_df["lookback_days"].iloc[0])
+    assert lookback >= lu.SHORT_METRICS_LOOKBACK_WARN
+    assert "SHY" not in result.signal["data_quality"]["missing_tickers"]
+
+
+def test_metrics_lookback_not_collapsed_by_sparse_shy_column(tmp_path: Path) -> None:
+    """Sparse SHY NaNs must not shrink portfolio metrics to a handful of days."""
+    prices = _live_prices(end="2023-06-30")
+    prices["SHY"] = np.nan
+    prices.loc[prices.index[-7:], "SHY"] = _live_prices(end="2023-06-30").loc[prices.index[-7:], "SHY"]
+
+    result = run_daily_update(
+        "2023-06-30",
+        prices=prices,
+        output_dir=tmp_path / "live",
+        dry_run=True,
+    )
+    lookback = int(result.metrics_df["lookback_days"].iloc[0])
+    assert lookback >= lu.SHORT_METRICS_LOOKBACK_WARN
+    assert any("insufficient_history:SHY" in w for w in result.signal["data_quality"]["warnings"])
+
+
+def test_short_history_emits_short_metrics_lookback_warning(tmp_path: Path) -> None:
+    prices = make_synthetic_prices(start="2023-05-01", end="2023-06-30", tickers=list(LIVE_POLICY_TICKERS))
+    result = run_daily_update(
+        "2023-06-30",
+        prices=prices,
+        output_dir=tmp_path / "live",
+        dry_run=True,
+    )
+    warnings = result.signal["data_quality"]["warnings"]
+    assert any(w.startswith("short_metrics_lookback:") for w in warnings)
+    assert int(result.metrics_df["lookback_days"].iloc[0]) < lu.SHORT_METRICS_LOOKBACK_WARN
+
+
+def test_no_look_ahead_after_refresh_style_panel(tmp_path: Path) -> None:
+    prices = _live_prices(end="2023-06-30")
+    result = run_daily_update("2023-06-15", prices=prices, output_dir=tmp_path / "live", dry_run=True)
+    written = result.prices_df
+    assert (written["data_as_of"] == "2023-06-15").all()
+    assert pd.Timestamp(written["price_date_used"].iloc[0]) <= pd.Timestamp("2023-06-15")

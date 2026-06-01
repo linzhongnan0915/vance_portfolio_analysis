@@ -34,8 +34,6 @@ from src.config import (
 )
 from src.data_loader import _price_cache_path
 from src.metrics import MetricResult, compute_metrics, metrics_to_series
-from src.preprocessing import prices_to_returns
-
 NY_TZ = ZoneInfo(LIVE_TIMEZONE)
 US_EQUITY_CLOSE_HOUR = 16  # America/New_York; daily bars treated complete after cash close
 
@@ -44,6 +42,12 @@ LIVE_PRICE_COLUMNS = ["ticker", "adj_close", "price_date_used", "data_as_of"]
 
 class PriceRefreshError(RuntimeError):
     """Raised when yfinance refresh fails and no usable local cache exists."""
+
+
+LIVE_INCREMENTAL_FETCH_DAYS = 10
+MIN_PRICE_OBS_FOR_METRICS = TRADING_DAYS + 1  # closes needed for ~252 return observations
+SHORT_METRICS_LOOKBACK_WARN = 60
+
 LIVE_METRICS_COLUMNS = [
     "strategy_id",
     "data_as_of",
@@ -143,12 +147,95 @@ def fetch_adjusted_closes(
     return panel
 
 
+def valid_price_count(series: pd.Series) -> int:
+    return int(series.notna().sum())
+
+
+def tickers_needing_full_backfill(
+    panel: pd.DataFrame | None,
+    tickers: list[str],
+    min_obs: int = MIN_PRICE_OBS_FOR_METRICS,
+) -> list[str]:
+    """Tickers missing from panel or with fewer than min_obs non-null closes."""
+    if panel is None or panel.empty:
+        return list(tickers)
+    need: list[str] = []
+    for t in tickers:
+        if t not in panel.columns:
+            need.append(t)
+        elif valid_price_count(panel[t]) < min_obs:
+            need.append(t)
+    return need
+
+
+def policy_daily_returns(
+    panel: pd.DataFrame,
+    price_ts: pd.Timestamp,
+    *,
+    missing_tickers: list[str],
+) -> pd.DataFrame:
+    """
+    Daily simple returns for live metrics.
+
+    Only requires non-null returns on active policy columns plus benchmark,
+    so one ticker with sparse NaN history does not collapse the full panel.
+    """
+    sub = panel.loc[panel.index <= price_ts]
+    active = [t for t in LIVE_POLICY_TICKERS if t not in missing_tickers and t in sub.columns]
+    cols = list(dict.fromkeys(active + ([BENCHMARK] if BENCHMARK in sub.columns else [])))
+    if not cols:
+        return pd.DataFrame()
+    rets = sub[cols].pct_change(fill_method=None)
+    daily = rets.dropna(how="any").copy()
+    for t in LIVE_POLICY_TICKERS:
+        if t not in daily.columns:
+            daily.loc[:, t] = 0.0
+    return daily
+
+
+def insufficient_history_tickers(
+    panel: pd.DataFrame,
+    price_ts: pd.Timestamp,
+    *,
+    min_price_obs: int = MIN_PRICE_OBS_FOR_METRICS,
+) -> list[str]:
+    """Policy tickers present but with too few non-null prices through price_ts."""
+    sub = panel.loc[panel.index <= price_ts]
+    return [
+        t
+        for t in LIVE_POLICY_TICKERS
+        if t in sub.columns and valid_price_count(sub[t]) < min_price_obs
+    ]
+
+
 def merge_price_panels(existing: pd.DataFrame | None, new: pd.DataFrame) -> pd.DataFrame:
-    """Merge new rows into cache; newer observations win on duplicate dates."""
+    """
+    Merge price panels on the union of dates and columns.
+
+    New non-null values overwrite existing values on duplicate dates; NaN in new
+    preserves existing. Single-ticker backfills do not remove unrelated columns.
+    """
     if existing is None or existing.empty:
         return new.sort_index()
-    merged = pd.concat([existing, new], axis=0)
-    merged = merged[~merged.index.duplicated(keep="last")]
+    if new is None or new.empty:
+        return existing.sort_index()
+
+    new = new.sort_index()
+    all_index = existing.index.union(new.index).sort_values()
+    all_columns = existing.columns.union(new.columns)
+
+    merged = existing.reindex(all_index).reindex(columns=all_columns)
+    new_aligned = new.reindex(all_index).reindex(columns=all_columns)
+
+    for col in all_columns:
+        if col not in new.columns:
+            continue
+        new_s = new_aligned[col]
+        if col in existing.columns:
+            merged[col] = new_s.combine_first(merged[col])
+        else:
+            merged[col] = new_s
+
     return merged.sort_index()
 
 
@@ -215,12 +302,18 @@ def refresh_price_cache(
         existing.index = pd.to_datetime(existing.index)
 
     if existing is not None and len(existing.index):
-        start = (existing.index.max() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+        recent_start = (
+            existing.index.max() - pd.Timedelta(days=LIVE_INCREMENTAL_FETCH_DAYS)
+        ).strftime("%Y-%m-%d")
     else:
-        start = DEFAULT_PRICE_START
+        recent_start = DEFAULT_PRICE_START
 
     try:
-        fetched = fetch_adjusted_closes(tickers, start, download_fn=download_fn)
+        fetched = fetch_adjusted_closes(
+            tickers,
+            recent_start if existing is not None and len(existing.index) else DEFAULT_PRICE_START,
+            download_fn=download_fn,
+        )
         refreshed = True
         vendor = "yfinance"
     except Exception as exc:
@@ -240,9 +333,19 @@ def refresh_price_cache(
         warnings.append(f"missing_tickers_in_fetch:{','.join(missing)}")
 
     merged = merge_price_panels(existing, fetched)
-    for t in tickers:
-        if t not in merged.columns and t in fetched.columns:
-            merged[t] = fetched[t]
+
+    need_backfill = tickers_needing_full_backfill(merged, tickers, MIN_PRICE_OBS_FOR_METRICS)
+    if need_backfill:
+        backfill = fetch_adjusted_closes(
+            need_backfill,
+            DEFAULT_PRICE_START,
+            download_fn=download_fn,
+        )
+        merged = merge_price_panels(merged, backfill)
+        missing = [t for t in tickers if t not in backfill.columns]
+        still_short = tickers_needing_full_backfill(merged, tickers, MIN_PRICE_OBS_FOR_METRICS)
+        for t in still_short:
+            warnings.append(f"insufficient_history_after_backfill:{t}")
 
     if write:
         save_price_cache(merged, data_dir)
@@ -521,23 +624,26 @@ def run_daily_update(
         for t in LIVE_POLICY_TICKERS
         if t not in panel.columns or panel.loc[panel.index <= price_ts, t].notna().sum() == 0
     ]
+    insuff_history = insufficient_history_tickers(panel, price_ts)
+    for t in insuff_history:
+        quality_warnings.append(f"insufficient_history:{t}")
+
     missing_tickers = sorted(
         set(refresh_meta.get("missing_tickers_fetch") or [])
         | set(no_price_policy)
+        | set(insuff_history)
     )
     if missing_tickers:
         quality_warnings.append(f"missing_tickers:{','.join(missing_tickers)}")
 
-    panel_returns = panel.drop(columns=[t for t in no_price_policy if t in panel.columns])
-    daily = prices_to_returns(panel_returns)
-    for t in LIVE_POLICY_TICKERS:
-        if t not in daily.columns:
-            daily[t] = 0.0
+    daily = policy_daily_returns(panel, price_ts, missing_tickers=missing_tickers)
     weights = policy_weights()
     port = portfolio_returns(daily, weights)
     bench = daily[BENCHMARK] if BENCHMARK in daily.columns else port * np.nan
     aligned = pd.concat([port, bench], axis=1, join="inner").dropna()
     lookback = min(metrics_lookback_days, len(aligned))
+    if lookback < SHORT_METRICS_LOOKBACK_WARN:
+        quality_warnings.append(f"short_metrics_lookback:{lookback}_of_{metrics_lookback_days}")
     if lookback < 2:
         raise ValueError("Insufficient return history for risk metrics")
     port_slice = aligned.iloc[-lookback:, 0]
@@ -581,6 +687,8 @@ def run_daily_update(
         "stale_days": stale_days,
         "vendor": vendor,
         "refreshed_prices": refreshed_flag,
+        "metrics_lookback_requested": metrics_lookback_days,
+        "metrics_lookback_used": lookback,
         "timezone": LIVE_TIMEZONE,
         "defaulted_to_cache_end": as_of is None and not refresh_prices,
     }

@@ -256,7 +256,8 @@ python scripts/update_daily.py --dry-run
 ```
 
 `--refresh-prices` fetches adjusted closes via yfinance, merges into
-`data/processed/vance_etf_prices.csv`, then writes `output/live/latest_*`.
+`data/processed/vance_etf_prices.csv` (union of dates/columns; new non-null
+overwrites, new NaN preserves existing), then writes `output/live/latest_*`.
 Cannot be combined with `--dry-run` (refresh mutates the price cache).
 
 - Idempotent overwrite of `latest_*` files
@@ -352,7 +353,7 @@ Locked scope for the first implementation. Items not listed here remain out of v
 | 7 | Output retention | Write **only `latest_*` files** under `output/live/`; **no historical archive** in v3 MVP |
 | 8 | Research output isolation | **Do not mutate** existing research artifacts (`output/stage*`, `output/dashboard/`, etc.). Live outputs are **isolated** under `output/live/` |
 | 9 | Execution and data claims | **No broker API**, **no order execution**, **no intraday data**, **no real-time claims** |
-| 10 | Price refresh (Phase 3) | Optional `--refresh-prices` merges **yfinance** adjusted closes into `data/processed/vance_etf_prices.csv`; on fetch failure, **fall back to cache** with `yfinance_fetch_failed_using_cache` warning; **not combinable with `--dry-run`** |
+| 10 | Price refresh (Phase 3) | Optional `--refresh-prices` merges **yfinance** into `data/processed/vance_etf_prices.csv`; tickers with **&lt; 253** non-null closes are **backfilled from `DEFAULT_PRICE_START`**; sparse columns do not collapse metrics via `dropna(how="any")`; warnings: `insufficient_history:*`, `short_metrics_lookback:*`; **not combinable with `--dry-run`** |
 
 **Implications for operators:**
 
