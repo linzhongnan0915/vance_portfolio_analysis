@@ -172,8 +172,9 @@ Machine-readable summary for dashboard and external tools:
   "data_quality": {
     "missing_tickers": [],
     "warnings": [],
-    "stale_calendar_days": 0,
+    "stale_days": 0,
     "vendor": "local_cache",
+    "refreshed_prices": false,
     "timezone": "America/New_York",
     "defaulted_to_cache_end": false
   }
@@ -249,9 +250,14 @@ Dependencies: existing `src/config.py` paths; new `OUTPUT_LIVE_DIR = OUTPUT_DIR 
 
 ```text
 python scripts/update_daily.py
+python scripts/update_daily.py --refresh-prices
 python scripts/update_daily.py --as-of 2026-05-30
 python scripts/update_daily.py --dry-run
 ```
+
+`--refresh-prices` fetches adjusted closes via yfinance, merges into
+`data/processed/vance_etf_prices.csv`, then writes `output/live/latest_*`.
+Cannot be combined with `--dry-run` (refresh mutates the price cache).
 
 - Idempotent overwrite of `latest_*` files
 - Exit code non-zero on missing tickers or stale data beyond threshold
@@ -346,10 +352,12 @@ Locked scope for the first implementation. Items not listed here remain out of v
 | 7 | Output retention | Write **only `latest_*` files** under `output/live/`; **no historical archive** in v3 MVP |
 | 8 | Research output isolation | **Do not mutate** existing research artifacts (`output/stage*`, `output/dashboard/`, etc.). Live outputs are **isolated** under `output/live/` |
 | 9 | Execution and data claims | **No broker API**, **no order execution**, **no intraday data**, **no real-time claims** |
+| 10 | Price refresh (Phase 3) | Optional `--refresh-prices` merges **yfinance** adjusted closes into `data/processed/vance_etf_prices.csv`; on fetch failure, **fall back to cache** with `yfinance_fetch_failed_using_cache` warning; **not combinable with `--dry-run`** |
 
 **Implications for operators:**
 
-- Run `scripts/update_daily.py` after the NY close to refresh monitoring files; the dashboard **Live / Daily Monitor** page reads `output/live/` only.
+- Run `python scripts/update_daily.py --refresh-prices` after the NY close to update the cache and live artifacts; cache-only: `python scripts/update_daily.py`.
+- The dashboard **Live / Daily Monitor** page reads `output/live/` only.
 - On non-rebalance days, users still see updated risk metrics and provisional target weights for the upcoming rebalance date; `rebalance_due=false` means "monitor only, not rebalance day."
 - Full research pipeline (`scripts/run_all_stages.py`) remains a separate, heavier job.
 
@@ -357,7 +365,7 @@ Locked scope for the first implementation. Items not listed here remain out of v
 
 ## 12. Open Questions (Resolve Before Implementation)
 
-1. Should live price refresh **append to** `data/processed/vance_etf_prices.csv`, or maintain a **separate** live price cache file under `data/` or `output/live/`?
+1. ~~Should live price refresh append to `data/processed/vance_etf_prices.csv`?~~ **Resolved (Phase 3):** append/merge into `data/processed/vance_etf_prices.csv`.
 
 ---
 

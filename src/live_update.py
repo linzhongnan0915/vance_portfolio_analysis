@@ -9,20 +9,24 @@ import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+import yfinance as yf
 
 from src.backtest import first_trading_day_on_or_after
 from src.config import (
     BENCHMARK,
     DATA_DIR,
+    DEFAULT_PRICE_START,
+    PRICE_CACHE_FILENAME,
     LIVE_DAILY_SIGNAL_MODE,
     LIVE_DISCLAIMER,
     LIVE_POLICY_TICKERS,
     LIVE_POLICY_WEIGHTS,
+    LIVE_PRICE_TICKERS,
     LIVE_STRATEGY_ID,
     LIVE_TIMEZONE,
     OUTPUT_LIVE_DIR,
@@ -33,8 +37,13 @@ from src.metrics import MetricResult, compute_metrics, metrics_to_series
 from src.preprocessing import prices_to_returns
 
 NY_TZ = ZoneInfo(LIVE_TIMEZONE)
+US_EQUITY_CLOSE_HOUR = 16  # America/New_York; daily bars treated complete after cash close
 
 LIVE_PRICE_COLUMNS = ["ticker", "adj_close", "price_date_used", "data_as_of"]
+
+
+class PriceRefreshError(RuntimeError):
+    """Raised when yfinance refresh fails and no usable local cache exists."""
 LIVE_METRICS_COLUMNS = [
     "strategy_id",
     "data_as_of",
@@ -89,6 +98,161 @@ def resolve_data_as_of(
     if isinstance(as_of, str):
         return pd.Timestamp(as_of).date()
     return as_of
+
+
+def _normalize_price_panel(raw: pd.DataFrame, tickers: list[str]) -> pd.DataFrame:
+    """Parse yfinance download output to a sorted DatetimeIndex x tickers panel."""
+    if raw.empty:
+        return pd.DataFrame()
+    if isinstance(raw.columns, pd.MultiIndex):
+        prices = raw["Close"].copy()
+    else:
+        col = tickers[0] if len(tickers) == 1 else "Close"
+        prices = raw[[col]].copy()
+        if len(tickers) == 1:
+            prices.columns = tickers
+    prices = prices.sort_index()
+    prices.index = pd.to_datetime(prices.index)
+    return prices
+
+
+def fetch_adjusted_closes(
+    tickers: list[str],
+    start: str,
+    *,
+    download_fn: Callable[..., pd.DataFrame] | None = None,
+) -> pd.DataFrame:
+    """
+    Fetch adjusted daily closes via yfinance (completed daily bars only).
+
+    Parameters
+    ----------
+    download_fn : optional injectable for tests (signature like yf.download).
+    """
+    download = download_fn or yf.download
+    raw = download(
+        tickers,
+        start=start,
+        auto_adjust=True,
+        progress=False,
+        group_by="column",
+    )
+    panel = _normalize_price_panel(raw, tickers)
+    if panel.empty:
+        raise PriceRefreshError(f"yfinance returned no rows for {tickers} from {start}")
+    return panel
+
+
+def merge_price_panels(existing: pd.DataFrame | None, new: pd.DataFrame) -> pd.DataFrame:
+    """Merge new rows into cache; newer observations win on duplicate dates."""
+    if existing is None or existing.empty:
+        return new.sort_index()
+    merged = pd.concat([existing, new], axis=0)
+    merged = merged[~merged.index.duplicated(keep="last")]
+    return merged.sort_index()
+
+
+def _processed_cache_path(data_dir: Path | None = None) -> Path:
+    base = data_dir or DATA_DIR
+    return base / "processed" / PRICE_CACHE_FILENAME
+
+
+def save_price_cache(panel: pd.DataFrame, data_dir: Path | None = None) -> Path:
+    path = _processed_cache_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    panel.sort_index().to_csv(path)
+    return path
+
+
+def last_completed_trading_date(
+    index: pd.DatetimeIndex,
+    *,
+    now: datetime | None = None,
+) -> date:
+    """
+    Latest completed US equity daily bar date in the panel.
+
+    If the last row is today's calendar date in NY but before the cash close,
+    drop that row (incomplete same-day bar).
+    """
+    if len(index) == 0:
+        raise ValueError("Price panel has no trading dates")
+    now = now or datetime.now(NY_TZ)
+    last_ts = index.max()
+    if last_ts.tzinfo is None:
+        last_local = last_ts
+    else:
+        last_local = last_ts.tz_convert(NY_TZ)
+    today_ny = now.date()
+    if last_local.date() == today_ny and now.hour < US_EQUITY_CLOSE_HOUR:
+        prior = index[index < last_ts.normalize()]
+        if len(prior) == 0:
+            raise ValueError("No completed trading day before today's incomplete bar")
+        return prior[-1].date()
+    return last_ts.date()
+
+
+def refresh_price_cache(
+    data_dir: Path | None = None,
+    tickers: list[str] | None = None,
+    *,
+    download_fn: Callable[..., pd.DataFrame] | None = None,
+    write: bool = True,
+    now: datetime | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """
+    Fetch latest yfinance adjusted closes and merge into the processed price cache.
+
+    On fetch failure, fall back to existing cache when present and record a warning.
+    """
+    data_dir = data_dir or DATA_DIR
+    tickers = tickers or LIVE_PRICE_TICKERS
+    warnings: list[str] = []
+    existing: pd.DataFrame | None = None
+    cache_path = _processed_cache_path(data_dir)
+    if cache_path.exists():
+        existing = pd.read_csv(cache_path, index_col=0, parse_dates=True).sort_index()
+        existing.index = pd.to_datetime(existing.index)
+
+    if existing is not None and len(existing.index):
+        start = (existing.index.max() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    else:
+        start = DEFAULT_PRICE_START
+
+    try:
+        fetched = fetch_adjusted_closes(tickers, start, download_fn=download_fn)
+        refreshed = True
+        vendor = "yfinance"
+    except Exception as exc:
+        if existing is None or existing.empty:
+            raise PriceRefreshError(
+                f"yfinance price refresh failed and no local cache at {cache_path}"
+            ) from exc
+        warnings.append("yfinance_fetch_failed_using_cache")
+        return existing, {
+            "refreshed_prices": False,
+            "vendor": "local_cache",
+            "warnings": warnings,
+        }
+
+    missing = [t for t in tickers if t not in fetched.columns]
+    if missing:
+        warnings.append(f"missing_tickers_in_fetch:{','.join(missing)}")
+
+    merged = merge_price_panels(existing, fetched)
+    for t in tickers:
+        if t not in merged.columns and t in fetched.columns:
+            merged[t] = fetched[t]
+
+    if write:
+        save_price_cache(merged, data_dir)
+
+    return merged, {
+        "refreshed_prices": refreshed,
+        "vendor": vendor,
+        "warnings": warnings,
+        "missing_tickers_fetch": missing,
+    }
 
 
 def load_prices_panel(
@@ -285,7 +449,10 @@ def run_daily_update(
     data_dir: Path | None = None,
     output_dir: Path | None = None,
     dry_run: bool = False,
+    refresh_prices: bool = False,
+    download_fn: Callable[..., pd.DataFrame] | None = None,
     metrics_lookback_days: int = TRADING_DAYS,
+    now: datetime | None = None,
 ) -> LiveUpdateResult:
     """
     Build live monitor files under output/live/.
@@ -293,16 +460,45 @@ def run_daily_update(
     Parameters
     ----------
     prices : optional injected panel for tests (must include policy tickers and SPY).
+    refresh_prices : when True, fetch yfinance and update local cache before artifacts.
+    download_fn : injectable yfinance download for tests.
     """
-    panel_full = load_prices_panel(data_dir=data_dir, prices=prices)
-    data_as_of = resolve_data_as_of(as_of, panel=panel_full)
+    if refresh_prices and dry_run:
+        raise ValueError(
+            "--refresh-prices cannot be combined with --dry-run: refresh updates the "
+            "local price cache and is not a read-only operation."
+        )
+    if refresh_prices and prices is not None:
+        raise ValueError("refresh_prices cannot be used with an injected prices panel")
+
+    refresh_meta: dict[str, Any] = {
+        "refreshed_prices": False,
+        "vendor": "local_cache",
+        "warnings": [],
+        "missing_tickers_fetch": [],
+    }
+
+    if refresh_prices:
+        panel_full, refresh_meta = refresh_price_cache(
+            data_dir=data_dir,
+            download_fn=download_fn,
+            write=not dry_run,
+            now=now,
+        )
+    else:
+        panel_full = load_prices_panel(data_dir=data_dir, prices=prices)
+
+    if as_of is None and refresh_prices:
+        data_as_of = last_completed_trading_date(panel_full.index, now=now)
+    else:
+        data_as_of = resolve_data_as_of(as_of, panel=panel_full)
     calendar_idx = panel_full.index
     panel = panel_full.loc[panel_full.index <= pd.Timestamp(data_as_of)]
 
     price_ts = last_trading_day_on_or_before(panel.index, data_as_of)
     price_date_used = price_ts.date()
 
-    quality_warnings: list[str] = []
+    quality_warnings: list[str] = list(refresh_meta.get("warnings") or [])
     signal_eff_ts = next_trading_day_after(calendar_idx, price_ts)
     if signal_eff_ts is None:
         quality_warnings.append("no_next_trading_day_in_cache")
@@ -320,9 +516,20 @@ def run_daily_update(
     rebalance_due = is_rebalance_due(calendar_idx, price_ts)
 
     tickers_for_prices = sorted(set(LIVE_POLICY_TICKERS) | {BENCHMARK})
-    missing_tickers = [t for t in LIVE_POLICY_TICKERS if t not in panel.columns]
+    no_price_policy = [
+        t
+        for t in LIVE_POLICY_TICKERS
+        if t not in panel.columns or panel.loc[panel.index <= price_ts, t].notna().sum() == 0
+    ]
+    missing_tickers = sorted(
+        set(refresh_meta.get("missing_tickers_fetch") or [])
+        | set(no_price_policy)
+    )
+    if missing_tickers:
+        quality_warnings.append(f"missing_tickers:{','.join(missing_tickers)}")
 
-    daily = prices_to_returns(panel)
+    panel_returns = panel.drop(columns=[t for t in no_price_policy if t in panel.columns])
+    daily = prices_to_returns(panel_returns)
     for t in LIVE_POLICY_TICKERS:
         if t not in daily.columns:
             daily[t] = 0.0
@@ -359,14 +566,23 @@ def run_daily_update(
         }
     )
 
-    stale_days = int((pd.Timestamp(data_as_of) - price_ts).days)
+    now_dt = now or datetime.now(NY_TZ)
+    stale_days = int((now_dt.date() - price_date_used).days)
+    if prices is not None:
+        vendor = "injected_panel"
+        refreshed_flag = False
+    else:
+        vendor = str(refresh_meta.get("vendor", "local_cache"))
+        refreshed_flag = bool(refresh_meta.get("refreshed_prices", False))
+
     data_quality = {
         "missing_tickers": missing_tickers,
         "warnings": quality_warnings,
-        "stale_calendar_days": stale_days,
-        "vendor": "local_cache" if prices is None else "injected_panel",
+        "stale_days": stale_days,
+        "vendor": vendor,
+        "refreshed_prices": refreshed_flag,
         "timezone": LIVE_TIMEZONE,
-        "defaulted_to_cache_end": as_of is None,
+        "defaulted_to_cache_end": as_of is None and not refresh_prices,
     }
 
     signal = build_signal_payload(

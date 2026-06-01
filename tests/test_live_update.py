@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from src.config import BENCHMARK, LIVE_POLICY_TICKERS, LIVE_STRATEGY_ID
+from src import live_update as lu
 from src.live_update import (
     is_rebalance_due,
     next_scheduled_rebalance_date,
@@ -143,3 +144,91 @@ def test_missing_shy_recorded_in_data_quality(tmp_path: Path) -> None:
     prices = make_synthetic_prices(start="2020-01-01", end="2022-12-31", tickers=tickers)
     result = run_daily_update("2022-06-15", prices=prices, output_dir=tmp_path / "live", dry_run=True)
     assert "SHY" in result.signal["data_quality"]["missing_tickers"]
+
+
+def test_refresh_prices_uses_mocked_fetch(tmp_path: Path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    fresh = _live_prices(end="2023-06-30")
+
+    monkeypatch.setattr(lu, "fetch_adjusted_closes", lambda tickers, start, **kw: fresh)
+    result = run_daily_update(
+        as_of=None,
+        data_dir=data_dir,
+        output_dir=tmp_path / "live",
+        refresh_prices=True,
+    )
+    dq = result.signal["data_quality"]
+    assert dq["refreshed_prices"] is True
+    assert dq["vendor"] == "yfinance"
+    assert result.data_as_of == pd.Timestamp("2023-06-30").date()
+    cache = data_dir / "processed" / "vance_etf_prices.csv"
+    assert cache.exists()
+
+
+def test_refresh_data_as_of_excludes_incomplete_same_day_bar(tmp_path: Path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    fresh = _live_prices(end="2024-03-15")
+    ny = lu.NY_TZ
+    now = __import__("datetime").datetime(2024, 3, 15, 10, 0, tzinfo=ny)
+
+    monkeypatch.setattr(lu, "fetch_adjusted_closes", lambda tickers, start, **kw: fresh)
+    result = run_daily_update(
+        as_of=None,
+        data_dir=data_dir,
+        output_dir=tmp_path / "live",
+        refresh_prices=True,
+        now=now,
+    )
+    assert result.data_as_of == pd.Timestamp("2024-03-14").date()
+
+
+def test_refresh_missing_ticker_in_fetch(tmp_path: Path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    tickers = [t for t in LIVE_POLICY_TICKERS if t != "SHY"]
+    if BENCHMARK not in tickers:
+        tickers.append(BENCHMARK)
+    fresh = make_synthetic_prices(start="2020-01-01", end="2022-12-31", tickers=tickers)
+
+    monkeypatch.setattr(lu, "fetch_adjusted_closes", lambda tickers, start, **kw: fresh)
+    result = run_daily_update(
+        "2022-06-15",
+        data_dir=data_dir,
+        output_dir=tmp_path / "live",
+        refresh_prices=True,
+    )
+    assert "SHY" in result.signal["data_quality"]["missing_tickers"]
+    assert any("missing_tickers" in w for w in result.signal["data_quality"]["warnings"])
+
+
+def test_refresh_fetch_failure_falls_back_to_cache(tmp_path: Path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    cache = _live_prices(end="2022-06-15")
+    path = data_dir / "processed" / "vance_etf_prices.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cache.to_csv(path)
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(lu, "fetch_adjusted_closes", _fail)
+    result = run_daily_update(
+        as_of=None,
+        data_dir=data_dir,
+        output_dir=tmp_path / "live",
+        refresh_prices=True,
+    )
+    dq = result.signal["data_quality"]
+    assert dq["refreshed_prices"] is False
+    assert dq["vendor"] == "local_cache"
+    assert "yfinance_fetch_failed_using_cache" in dq["warnings"]
+
+
+def test_refresh_prices_with_dry_run_raises() -> None:
+    with pytest.raises(ValueError, match="refresh-prices cannot be combined"):
+        run_daily_update(refresh_prices=True, dry_run=True)
+
+
+def test_no_refresh_path_unchanged(tmp_path: Path) -> None:
+    result = run_daily_update("2022-06-15", prices=_live_prices(), output_dir=tmp_path / "live", dry_run=True)
+    assert result.signal["data_quality"]["refreshed_prices"] is False
+    assert result.signal["data_quality"]["vendor"] == "injected_panel"

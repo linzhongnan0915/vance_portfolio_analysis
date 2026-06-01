@@ -31,6 +31,8 @@ LIVE_DISCLAIMER = (
 
 TICKERS = ["QQQ", "SPY", "DIA", "GLD", "TLT"]
 BENCHMARK = "SPY"
+# Universe for live price refresh (policy sleeve + benchmark for metrics)
+LIVE_PRICE_TICKERS = sorted(set(LIVE_POLICY_TICKERS + [BENCHMARK]))
 TARGET_WEIGHTS = pd.Series(
     {"QQQ": 0.25, "SPY": 0.25, "DIA": 0.25, "GLD": 0.15, "TLT": 0.10},
     name="target_weight",
