@@ -22,8 +22,10 @@ def fmt_metrics_table(df: pd.DataFrame) -> pd.DataFrame:
     ]
     for c in pct_cols:
         if c in out.columns:
+            out[c] = out[c].astype(object)
             out[c] = out[c].apply(lambda x: pct(x) if isinstance(x, (int, float)) else x)
     for c in ["Sharpe Ratio", "Sortino Ratio", "Calmar Ratio", "Beta vs SPY", "Information Ratio vs SPY"]:
         if c in out.columns:
+            out[c] = out[c].astype(object)
             out[c] = out[c].apply(lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else x)
     return out

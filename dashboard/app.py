@@ -281,11 +281,14 @@ elif page == "Backtest Results":
             "Avg Monthly Turnover", "Max Monthly Turnover",
         ]
         avail = [c for c in display_cols if c in metrics.columns]
-        fmt = fmt.fmt_metrics_table(metrics[avail])
+        metrics_display = fmt.fmt_metrics_table(metrics[avail])
         for c in ["Avg Monthly Turnover", "Max Monthly Turnover"]:
-            if c in fmt.columns:
-                fmt[c] = fmt[c].apply(lambda x: fmt.pct(x) if isinstance(x, (int, float)) else x)
-        st.dataframe(fmt, width="stretch", hide_index=True)
+            if c in metrics_display.columns:
+                metrics_display[c] = metrics_display[c].astype(object)
+                metrics_display[c] = metrics_display[c].apply(
+                    lambda x: fmt.pct(x) if isinstance(x, (int, float)) else x
+                )
+        st.dataframe(metrics_display, width="stretch", hide_index=True)
         st.caption("Turnover from walk-forward rebalance logs (Stage 3) and mandate comparison (Stage 6B). SPY = buy-and-hold.")
 
 # =============================================================================
