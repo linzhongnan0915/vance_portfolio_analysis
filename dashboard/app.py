@@ -58,7 +58,7 @@ page = st.sidebar.radio(
         "Robustness",
         "Mandate Selection",
         "Validation / Reconciliation",
-        "Final Recommendation",
+        "Policy Candidate",
     ],
 )
 st.sidebar.markdown("---")
@@ -97,9 +97,10 @@ baseline policy → walk-forward backtest → stress diagnosis → robustness ch
             "not classic severe overfitting. Uncapped inverse-vol + SHY allocated ~73% to SHY — cash-like and mandate-inconsistent."
         )
         st.success(
-            "**Final recommended policy:** Fixed + SHY Version A — "
-            "QQQ/SPY/DIA 25% each, GLD 15%, TLT 5%, SHY 5%. "
-            "Equity-oriented, explainable, modest 2022 improvement."
+            "Current policy candidate: Fixed + SHY Version A. This is a simple, "
+            "mandate-consistent defensive adjustment that modestly improves 2022 stress "
+            "behavior, but it is not a full-period dominant strategy. Constrained dynamic "
+            "SHY strategies should be tested before calling it optimal."
         )
 
     st.subheader("Workflow Completed")
@@ -133,7 +134,10 @@ risk policy — and which defensive extension fits a wealth-management mandate?
                  width="stretch", hide_index=True)
     decision = flow[flow["Step"] == "Final decision"]
     if not decision.empty:
-        st.success(f"**Final decision:** {decision.iloc[0]['Content']}")
+        st.info(
+            f"**Policy candidate / next research step:** {decision.iloc[0]['Content']} "
+            "Interpret as a mandate-consistent adjustment, not a full-period dominant strategy."
+        )
 
 # =============================================================================
 elif page == "Baseline IS/OOS":
@@ -247,10 +251,10 @@ elif page == "Portfolio Construction":
     with c1:
         charts.pie_weights(orig, "Original Fixed Portfolio")
     with c2:
-        charts.pie_weights(rec, "Recommended: Fixed + SHY (Version A)")
+        charts.pie_weights(rec, "Policy candidate: Fixed + SHY (Version A)")
 
     st.caption(
-        "Version A shifts 5% from TLT to SHY — a transparent defensive adjustment, not tuned for 2022."
+        "Version A shifts 5% from TLT to SHY — a simple defensive adjustment; not a full-period dominant strategy."
     )
 
 # =============================================================================
@@ -358,11 +362,12 @@ Adding **SHY** (short-duration Treasuries) tests whether a cash-like defensive s
 | Policy | 2022 return | Avg SHY | Verdict |
 |--------|-------------|---------|---------|
 | Original fixed | ~−18.0% | 0% | Baseline — full TLT duration risk |
-| Fixed + SHY (A) | ~−16.6% | ~5% | **Recommended** — modest buffer, −0.1pp return cost |
-| Fixed + SHY (B) | ~−15.2% | ~10% | Conservative — more buffer, −0.2pp return cost |
+| Fixed + SHY (A) | ~−16.6% | ~5% | **Policy candidate** — modest 2022 buffer, small full-period return/Sharpe cost |
+| Fixed + SHY (B) | ~−15.2% | ~10% | Conservative candidate — more buffer, −0.2pp return cost |
 | Inv-vol + SHY uncapped | ~−7.3% | ~73% | **Not recommended** — cash-like, ~4% return |
 
-- **Fixed + SHY** trades ~0.1–0.2pp annual return for ~1–3pp better 2022 outcome — transparent and mandate-consistent.
+- **Fixed + SHY** trades ~0.1–0.2pp annual return for modestly better 2022 stress behavior — mandate-consistent, not dominant on every metric.
+- Further constrained dynamic SHY strategies should be tested before calling any variant optimal.
 - **Uncapped inverse-vol + SHY** mechanically overweight SHY (lowest vol) — high Sharpe from low absolute risk, not equity risk management.
 """
     )
@@ -649,7 +654,10 @@ elif page == "Mandate Selection":
 """
     )
     st.error("**Not recommended:** Inverse-vol + SHY uncapped — high Sharpe from cash exposure, not equity risk management.")
-    st.warning("**Realistic candidates:** Fixed + SHY (A/B) or capped inverse-vol (if dynamic policy required).")
+    st.warning(
+        "**Policy candidates for review:** Fixed + SHY (A/B) as simple defensive adjustments; "
+        "capped inverse-vol only if a dynamic policy is required. Not full-period dominant strategies."
+    )
 
 # =============================================================================
 elif page == "Validation / Reconciliation":
@@ -707,8 +715,11 @@ This section documents **what was verified** and **how to interpret surprising-l
     )
 
 # =============================================================================
-elif page == "Final Recommendation":
-    st.header("Final Recommendation")
+elif page == "Policy Candidate":
+    st.header("Policy Candidate / Next Research Step")
+    st.markdown(
+        "The selection is based on interpretability and mandate consistency, not the highest Sharpe ratio."
+    )
 
     st.subheader("Why not highest Sharpe?")
     st.warning(
@@ -728,12 +739,13 @@ and behaves like a cash allocation, not a diversified growth portfolio.
     with c1:
         st.success(
             """
-### Primary: Fixed + SHY Version A
+### Policy candidate: Fixed + SHY Version A
 **QQQ 25% | SPY 25% | DIA 25% | GLD 15% | TLT 5% | SHY 5%**
 
-- Equity-oriented (~75%), mandate-consistent
-- 2022: −16.6% vs −18.0% original (−0.1pp return cost)
-- Lowest turnover (~1%/mo), fully explainable
+- Simple, mandate-consistent defensive adjustment (~75% equity)
+- 2022 stress: modest improvement vs original (−16.6% vs −18.0%); small full-period return/Sharpe cost
+- Lowest turnover (~1%/mo), fully explainable — not dominant on every walk-forward metric
+- Further constrained dynamic SHY strategies should be tested before calling it optimal
 """
         )
     with c2:
@@ -772,6 +784,7 @@ and behaves like a cash allocation, not a diversified growth portfolio.
     st.subheader("Next Steps")
     st.markdown(
         """
+- Test **constrained dynamic SHY strategies** before treating Version A as more than a policy candidate
 - Monitor rolling beta, drawdown, and stock–bond correlation (2022-style regime flag)
 - Assume ~5–10 bps transaction costs in live implementation
 - Re-run walk-forward quarterly: `python scripts/stages/stage03_walkforward.py`
